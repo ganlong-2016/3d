@@ -209,4 +209,220 @@ object ObjLoader {
             positions.toFloatArray(), normals.toFloatArray(), indices.toShortArray()
         )
     }
+
+    /**
+     * 程序化生成 UV 球体
+     *
+     * 用经纬线网格生成球面，面数越多越光滑。
+     * 对比不同参数可以直观看到「面数越多越精细」：
+     *   stacks=3, slices=6   → 36 面（棱角分明）
+     *   stacks=16, slices=24 → 768 面（接近光滑）
+     *
+     * @param radius 球体半径
+     * @param stacks 纬度分段数（从南极到北极）
+     * @param slices 经度分段数（绕一圈）
+     */
+    fun generateSphere(
+        radius: Float = 0.8f,
+        stacks: Int = 16,
+        slices: Int = 24,
+    ): MeshData {
+        val positions = mutableListOf<Float>()
+        val normals = mutableListOf<Float>()
+
+        for (i in 0..stacks) {
+            val phi = Math.PI * i / stacks          // 0(北极) → π(南极)
+            val y = cos(phi).toFloat()
+            val r = sin(phi).toFloat()
+
+            for (j in 0..slices) {
+                val theta = 2.0 * Math.PI * j / slices  // 0 → 2π 绕一圈
+                val x = (r * cos(theta)).toFloat()
+                val z = (r * sin(theta)).toFloat()
+
+                // 单位球上，顶点位置就是法线方向
+                normals.addAll(listOf(x, y, z))
+                positions.addAll(listOf(x * radius, y * radius, z * radius))
+            }
+        }
+
+        val indices = mutableListOf<Short>()
+        val cols = slices + 1
+        for (i in 0 until stacks) {
+            for (j in 0 until slices) {
+                val a = (i * cols + j).toShort()
+                val b = ((i + 1) * cols + j).toShort()
+                val c = ((i + 1) * cols + j + 1).toShort()
+                val d = (i * cols + j + 1).toShort()
+                indices.addAll(listOf(a, b, c, a, c, d))
+            }
+        }
+
+        return MeshData(
+            positions.toFloatArray(), normals.toFloatArray(), indices.toShortArray()
+        )
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  下面的生成器用于「概念可视化」模型 —— 展示坐标系、光照等原理
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * 程序化生成 XYZ 坐标轴
+     *
+     * 三个箭头分别指向 X、Y、Z 正方向，中心有一个小方块。
+     * 每个箭头 = 矩形杆身 + 四棱锥箭尖。
+     *
+     * 对应文档：「坐标变换 — 模型空间 → 世界空间 → 观察空间」
+     * 旋转这个模型，就能看到坐标轴随之旋转——这就是坐标变换的本质。
+     */
+    fun generateAxes(): MeshData {
+        val pos = mutableListOf<Float>()
+        val nrm = mutableListOf<Float>()
+        val idx = mutableListOf<Short>()
+
+        // 沿 dir 方向生成一个箭头，u/v 是垂直于 dir 的两个方向
+        fun addArrow(
+            dx: Float, dy: Float, dz: Float,
+            ux: Float, uy: Float, uz: Float,
+            vx: Float, vy: Float, vz: Float,
+        ) {
+            val sLen = 0.55f; val tLen = 0.25f
+            val sr = 0.018f; val tr = 0.05f
+            val base = pos.size / 3
+            val corners = arrayOf(
+                floatArrayOf(-1f, -1f), floatArrayOf(1f, -1f),
+                floatArrayOf(1f, 1f), floatArrayOf(-1f, 1f),
+            )
+
+            // 杆身 8 个顶点（近端 4 + 远端 4）
+            for (t in floatArrayOf(0f, sLen)) {
+                for (c in corners) {
+                    val su = c[0]; val sv = c[1]
+                    pos.add(dx * t + ux * su * sr + vx * sv * sr)
+                    pos.add(dy * t + uy * su * sr + vy * sv * sr)
+                    pos.add(dz * t + uz * su * sr + vz * sv * sr)
+                    val nx = ux * su + vx * sv
+                    val ny = uy * su + vy * sv
+                    val nz = uz * su + vz * sv
+                    val l = sqrt(nx * nx + ny * ny + nz * nz)
+                    nrm.addAll(listOf(nx / l, ny / l, nz / l))
+                }
+            }
+
+            fun quad(a: Int, b: Int, c: Int, d: Int) {
+                idx.add((base + a).toShort()); idx.add((base + b).toShort()); idx.add((base + c).toShort())
+                idx.add((base + a).toShort()); idx.add((base + c).toShort()); idx.add((base + d).toShort())
+            }
+            quad(0, 1, 5, 4); quad(1, 2, 6, 5); quad(2, 3, 7, 6); quad(3, 0, 4, 7)
+            idx.addAll(listOf((base + 3).toShort(), (base + 2).toShort(), (base + 1).toShort()))
+            idx.addAll(listOf((base + 3).toShort(), (base + 1).toShort(), (base + 0).toShort()))
+
+            // 箭尖 5 个顶点（底面 4 + 尖端 1）
+            val tipBase = pos.size / 3
+            for (c in corners) {
+                val su = c[0]; val sv = c[1]
+                pos.add(dx * sLen + ux * su * tr + vx * sv * tr)
+                pos.add(dy * sLen + uy * su * tr + vy * sv * tr)
+                pos.add(dz * sLen + uz * su * tr + vz * sv * tr)
+                val nx = ux * su * 0.3f + vx * sv * 0.3f + dx
+                val ny = uy * su * 0.3f + vy * sv * 0.3f + dy
+                val nz = uz * su * 0.3f + vz * sv * 0.3f + dz
+                val l = sqrt(nx * nx + ny * ny + nz * nz)
+                nrm.addAll(listOf(nx / l, ny / l, nz / l))
+            }
+            pos.addAll(listOf(dx * (sLen + tLen), dy * (sLen + tLen), dz * (sLen + tLen)))
+            nrm.addAll(listOf(dx, dy, dz))
+            val apex = tipBase + 4
+            for (i in 0..3) {
+                idx.add((tipBase + i).toShort())
+                idx.add((tipBase + (i + 1) % 4).toShort())
+                idx.add(apex.toShort())
+            }
+        }
+
+        addArrow(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f) // X 轴
+        addArrow(0f, 1f, 0f, 0f, 0f, 1f, 1f, 0f, 0f) // Y 轴
+        addArrow(0f, 0f, 1f, 1f, 0f, 0f, 0f, 1f, 0f) // Z 轴
+
+        // 原点小方块
+        val cb = pos.size / 3
+        val s = 0.035f
+        for (sx in listOf(-1f, 1f)) {
+            for (sy in listOf(-1f, 1f)) {
+                for (sz in listOf(-1f, 1f)) {
+                    pos.addAll(listOf(sx * s, sy * s, sz * s))
+                    val l = sqrt(3f)
+                    nrm.addAll(listOf(sx / l, sy / l, sz / l))
+                }
+            }
+        }
+        val cq = arrayOf(
+            intArrayOf(4, 6, 7, 5), intArrayOf(0, 1, 3, 2),
+            intArrayOf(2, 3, 7, 6), intArrayOf(0, 4, 5, 1),
+            intArrayOf(1, 5, 7, 3), intArrayOf(0, 2, 6, 4),
+        )
+        for (q in cq) {
+            idx.add((cb + q[0]).toShort()); idx.add((cb + q[1]).toShort()); idx.add((cb + q[2]).toShort())
+            idx.add((cb + q[0]).toShort()); idx.add((cb + q[2]).toShort()); idx.add((cb + q[3]).toShort())
+        }
+
+        return MeshData(pos.toFloatArray(), nrm.toFloatArray(), idx.toShortArray())
+    }
+
+    /**
+     * 程序化生成波浪面 — 法线与光照的终极演示
+     *
+     * 一个平面加上正弦波起伏，每个点的法线都不同。
+     * 渲染后可以清晰看到：
+     *   · 法线朝向光源的区域 → 明亮（漫反射强）
+     *   · 法线背离光源的区域 → 暗（漫反射弱）
+     *   · 法线恰好反射到眼睛的区域 → 高光点
+     *
+     * 这就是文档所说的 Blinn-Phong 光照模型的直观体现。
+     *
+     * @param gridSize 网格细分数（每边 gridSize 个格子）
+     * @param extent   平面半宽（从 -extent 到 +extent）
+     * @param amplitude 波浪高度
+     * @param frequency 波浪频率
+     */
+    fun generateWavySurface(
+        gridSize: Int = 30,
+        extent: Float = 0.8f,
+        amplitude: Float = 0.10f,
+        frequency: Float = 2.5f,
+    ): MeshData {
+        val positions = mutableListOf<Float>()
+        val normals = mutableListOf<Float>()
+        val freq = (frequency * Math.PI).toFloat()
+
+        for (i in 0..gridSize) {
+            for (j in 0..gridSize) {
+                val x = -extent + 2f * extent * i / gridSize
+                val z = -extent + 2f * extent * j / gridSize
+                val y = amplitude * sin(x * freq) * cos(z * freq)
+                positions.addAll(listOf(x, y, z))
+
+                val dydx = amplitude * freq * cos(x * freq) * cos(z * freq)
+                val dydz = -amplitude * freq * sin(x * freq) * sin(z * freq)
+                val nx = -dydx; val ny = 1f; val nz = -dydz
+                val l = sqrt(nx * nx + ny * ny + nz * nz)
+                normals.addAll(listOf(nx / l, ny / l, nz / l))
+            }
+        }
+
+        val indices = mutableListOf<Short>()
+        val cols = gridSize + 1
+        for (i in 0 until gridSize) {
+            for (j in 0 until gridSize) {
+                val a = (i * cols + j).toShort()
+                val b = ((i + 1) * cols + j).toShort()
+                val c = ((i + 1) * cols + j + 1).toShort()
+                val d = (i * cols + j + 1).toShort()
+                indices.addAll(listOf(a, b, c, a, c, d))
+            }
+        }
+
+        return MeshData(positions.toFloatArray(), normals.toFloatArray(), indices.toShortArray())
+    }
 }

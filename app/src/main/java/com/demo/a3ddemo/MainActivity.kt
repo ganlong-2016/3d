@@ -36,10 +36,12 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -141,12 +143,12 @@ private val demos = listOf(
     ),
     DemoInfo(
         step = "第五步",
-        title = "换车型 — 加载 3D 模型",
-        concepts = "模型文件(OBJ) · 顶点数据解析 · Mesh 通用性",
-        description = "3D 模型文件（.obj）本质上就是顶点数据的集合：位置、法线、三角形索引。" +
-                "加载模型 = 解析文件 → 提取顶点数据 → 送入相同的 GPU 渲染管线。" +
-                "这个环形体(Torus)复用了 Demo 3 的光照 Shader，" +
-                "证明同一个「喷漆机器人」能给任何形状的「白车身」上色。",
+        title = "点线面 + 概念可视化",
+        concepts = "Mesh · 面数 · 坐标轴 · 视锥体 · 法线光照 · 波浪面",
+        description = "11 个模型分两组：①~⑥ 从四面体到环形体，面数递增展示精细度差异；" +
+                "⑦~⑪ 概念可视化——坐标轴(坐标变换)、箭头(方向向量)、" +
+                "视锥体(相机投影)、楼梯(法线决定光照)、波浪面(Blinn-Phong 明暗)。" +
+                "点击「下一个模型」逐一切换。",
         tip = "单指拖动旋转 · 双指捏合缩放",
     ),
     DemoInfo(
@@ -351,21 +353,55 @@ private fun DemoViewScreen(index: Int, onBack: () -> Unit) {
             )
         }
 
-        // ─── 底部浮层：交互提示 ───
-        Surface(
+        // ─── 底部浮层 ───
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(16.dp),
-            color = Color.Black.copy(alpha = 0.55f),
-            shape = RoundedCornerShape(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                info.tip,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
-                color = Color.White.copy(alpha = 0.85f),
-                style = MaterialTheme.typography.bodyMedium,
-            )
+            // Demo 5 专属：模型信息 + 切换按钮
+            if (index == 4) {
+                val mr = renderer as? ModelRenderer
+                var modelLabel by remember { mutableStateOf("") }
+                LaunchedEffect(mr) {
+                    while (true) {
+                        modelLabel = mr?.modelInfo ?: ""
+                        delay(200)
+                    }
+                }
+                if (modelLabel.isNotEmpty()) {
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.65f),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text(
+                            modelLabel,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                            color = Color.White,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+                Button(onClick = { mr?.nextModel() }) {
+                    Text("下一个模型 →")
+                }
+            }
+            // 交互提示
+            Surface(
+                color = Color.Black.copy(alpha = 0.55f),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text(
+                    info.tip,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                    color = Color.White.copy(alpha = 0.85f),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
         }
     }
 }
