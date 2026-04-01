@@ -22,7 +22,7 @@ android {
 }
 
 dependencies {
-    implementation(project(":service-lib"))
+    api(project(":ipc-lib"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)

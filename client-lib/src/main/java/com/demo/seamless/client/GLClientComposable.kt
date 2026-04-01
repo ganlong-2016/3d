@@ -1,6 +1,7 @@
 package com.demo.seamless.client
 
-import android.opengl.GLSurfaceView
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,17 +30,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.demo.a3ddemo.renderer.LitCubeRenderer
 import com.demo.seamless.ipc.IpcConstants
 
 /**
- * GL Client Composable — Client App 的核心 UI 组件
+ * GL Client Screen — renders via remote Service.
  *
- * 封装了：
- *   1. GLSurfaceView + LitCubeRenderer 渲染 3D 模型
- *   2. 触控手势（旋转/缩放）——同步到渲染器摄像机
- *   3. 与 Service Host 的连接管理
- *   4. 一镜到底过渡按钮（把当前摄像机状态发给 Service）
+ * Creates a SurfaceView and passes its Surface to the GLRenderService via AIDL.
+ * The service performs all OpenGL rendering; this composable only handles
+ * touch gestures and forwards camera updates to the service.
  */
 @Composable
 fun GLClientScreen(
@@ -51,7 +49,7 @@ fun GLClientScreen(
 ) {
     val context = LocalContext.current
     val connManager = remember {
-        ServiceConnectionManager(context, clientId).also { it.bind() }
+        ServiceConnectionManager(context, clientId)
     }
 
     val defaultCfg = IpcConstants.CLIENT_CONFIGS[clientId]
@@ -59,34 +57,36 @@ fun GLClientScreen(
     var rotY by remember { mutableFloatStateOf(defaultCfg?.homeRotY ?: 45f) }
     var dist by remember { mutableFloatStateOf(defaultCfg?.homeDist ?: 3.5f) }
 
-    val renderer = remember {
-        LitCubeRenderer(context).apply {
-            autoRotate = false
-            rotationX = defaultCfg?.homeRotX ?: -25f
-            rotationY = defaultCfg?.homeRotY ?: 45f
-            cameraDistance = defaultCfg?.homeDist ?: 3.5f
-        }
-    }
-
     DisposableEffect(Unit) {
-        onDispose { connManager.unbind() }
+        connManager.bind()
+        onDispose {
+            connManager.removeSurface()
+            connManager.unbind()
+        }
     }
 
     Box(Modifier.fillMaxSize()) {
 
-        // Layer 1: OpenGL 3D 渲染（最底层）
         AndroidView(
             factory = { ctx ->
-                GLSurfaceView(ctx).apply {
-                    setEGLContextClientVersion(3)
-                    setRenderer(renderer)
-                    renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+                SurfaceView(ctx).apply {
+                    holder.addCallback(object : SurfaceHolder.Callback {
+                        override fun surfaceCreated(holder: SurfaceHolder) {}
+
+                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                            connManager.setSurface(holder.surface, width, height)
+                            connManager.updateCamera(rotX, rotY, dist)
+                        }
+
+                        override fun surfaceDestroyed(holder: SurfaceHolder) {
+                            connManager.removeSurface()
+                        }
+                    })
                 }
             },
             modifier = Modifier.fillMaxSize(),
         )
 
-        // Layer 2: 透明手势层 + UI 覆盖在 GL 上方
         Box(
             Modifier
                 .fillMaxSize()
@@ -98,14 +98,11 @@ fun GLClientScreen(
                         rotY += pan.x * 0.3f
                         rotX = (rotX + pan.y * 0.3f).coerceIn(-85f, 85f)
 
-                        renderer.rotationX = rotX
-                        renderer.rotationY = rotY
-                        renderer.cameraDistance = dist
+                        connManager.updateCamera(rotX, rotY, dist)
                     }
                 }
         ) {
 
-            // 顶部标题
             Surface(
                 modifier = Modifier
                     .align(Alignment.TopStart)
@@ -123,7 +120,6 @@ fun GLClientScreen(
                 )
             }
 
-            // 底部过渡按钮
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)

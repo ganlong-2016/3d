@@ -27,7 +27,6 @@ android {
 
 dependencies {
     implementation(project(":client-lib"))
-    implementation(project(":service-lib"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)

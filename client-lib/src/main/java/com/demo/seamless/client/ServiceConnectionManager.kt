@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
 import android.util.Log
+import android.view.Surface
 import com.demo.seamless.ipc.IGLRenderService
 import com.demo.seamless.ipc.IpcConstants
 
@@ -19,6 +20,7 @@ class ServiceConnectionManager(
 
     private var service: IGLRenderService? = null
     private var bound = false
+    private var pendingSurface: Triple<Surface, Int, Int>? = null
 
     var onConnected: (() -> Unit)? = null
 
@@ -32,6 +34,11 @@ class ServiceConnectionManager(
                 service?.registerClient(clientId)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to register client", e)
+            }
+
+            pendingSurface?.let { (s, w, h) ->
+                setSurface(s, w, h)
+                pendingSurface = null
             }
 
             onConnected?.invoke()
@@ -58,33 +65,51 @@ class ServiceConnectionManager(
 
     fun unbind() {
         if (bound) {
-            try {
-                service?.unregisterClient(clientId)
-            } catch (_: Exception) { }
-            try {
-                context.unbindService(connection)
-            } catch (_: Exception) { }
+            try { service?.unregisterClient(clientId) } catch (_: Exception) { }
+            try { context.unbindService(connection) } catch (_: Exception) { }
             bound = false
             service = null
         }
     }
 
-    /**
-     * 请求一镜到底过渡（携带当前摄像机状态）
-     */
-    fun requestTransition(
-        targetPkg: String, targetAct: String, durationMs: Long,
-        currentRotX: Float, currentRotY: Float, currentDist: Float,
-    ) {
-        if (service == null) {
-            Log.w(TAG, "requestTransition: service NOT connected (bound=$bound)")
+    fun setSurface(surface: Surface, width: Int, height: Int) {
+        val svc = service
+        if (svc == null) {
+            pendingSurface = Triple(surface, width, height)
             return
         }
         try {
-            service?.requestTransition(
-                clientId, targetPkg, targetAct, durationMs,
-                currentRotX, currentRotY, currentDist,
-            )
+            svc.setSurface(clientId, surface, width, height)
+        } catch (e: Exception) {
+            Log.e(TAG, "setSurface failed", e)
+        }
+    }
+
+    fun removeSurface() {
+        pendingSurface = null
+        try {
+            service?.removeSurface(clientId)
+        } catch (e: Exception) {
+            Log.e(TAG, "removeSurface failed", e)
+        }
+    }
+
+    fun updateCamera(rotX: Float, rotY: Float, dist: Float) {
+        try {
+            service?.updateCamera(clientId, rotX, rotY, dist)
+        } catch (_: Exception) { }
+    }
+
+    fun requestTransition(
+        targetPkg: String, targetAct: String, durationMs: Long,
+        rotX: Float, rotY: Float, dist: Float,
+    ) {
+        if (service == null) {
+            Log.w(TAG, "requestTransition: service NOT connected")
+            return
+        }
+        try {
+            service?.requestTransition(clientId, targetPkg, targetAct, durationMs, rotX, rotY, dist)
         } catch (e: Exception) {
             Log.e(TAG, "Transition request failed", e)
         }

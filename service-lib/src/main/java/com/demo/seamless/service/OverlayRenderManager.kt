@@ -4,67 +4,49 @@ import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.content.Context
-import android.content.Intent
 import android.graphics.PixelFormat
-import android.opengl.GLSurfaceView
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.util.Log
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
-import com.demo.a3ddemo.renderer.LitCubeRenderer
 
 /**
- * 一镜到底 Overlay 渲染管理器
+ * Overlay transition manager that uses the shared EglRenderEngine.
  *
- * 核心原理：
- *   1. 创建 TYPE_APPLICATION_OVERLAY 全屏窗口，内含 GLSurfaceView
- *   2. GLSurfaceView 以发起方当前摄像机角度开始渲染同一模型
- *   3. 摄像机平滑轨道旋转到目标客户端的主视角（DecelerateInterpolator）
- *   4. 动画期间在 overlay 遮挡下启动目标 Activity
- *   5. 动画结束 + 目标就绪后移除 overlay
- *
- * 用户视角：同一个 3D 模型从一个角度平滑旋转到另一个角度，看不到 App 切换。
+ * Instead of creating its own GLSurfaceView + renderer, it creates a SurfaceView
+ * inside an overlay window and registers the Surface with the engine as the
+ * "overlay" render target. Camera animation drives the target's camera params.
  */
-class OverlayRenderManager(private val context: Context) {
+class OverlayRenderManager(
+    private val context: Context,
+    private val engine: EglRenderEngine,
+) {
 
     companion object {
         private const val TAG = "OverlayRender"
+        private const val OVERLAY_TARGET_ID = "__overlay__"
     }
 
     private val handler = Handler(Looper.getMainLooper())
     private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
     private var overlayRoot: FrameLayout? = null
-    private var glSurfaceView: GLSurfaceView? = null
-    private var renderer: LitCubeRenderer? = null
     private var currentAnimator: ValueAnimator? = null
 
     val isShowing: Boolean get() = overlayRoot != null
 
     fun canShowOverlay(): Boolean {
-        val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Settings.canDrawOverlays(context)
         } else true
-        Log.d(TAG, "canShowOverlay=$result, package=${context.packageName}")
-        return result
     }
 
-    /**
-     * 执行一镜到底过渡
-     *
-     * @param startRotX   发起方当前摄像机 rotationX
-     * @param startRotY   发起方当前摄像机 rotationY
-     * @param startDist   发起方当前摄像机 cameraDistance
-     * @param endRotX     目标客户端主视角 rotationX
-     * @param endRotY     目标客户端主视角 rotationY
-     * @param endDist     目标客户端主视角 cameraDistance
-     * @param durationMs  摄像机轨道动画时长
-     * @param launchTarget 在动画开始时调用，启动目标 Activity
-     */
     fun performTransition(
         startRotX: Float, startRotY: Float, startDist: Float,
         endRotX: Float, endRotY: Float, endDist: Float,
@@ -72,7 +54,7 @@ class OverlayRenderManager(private val context: Context) {
         launchTarget: () -> Unit,
     ) {
         if (!canShowOverlay()) {
-            Log.w(TAG, "No overlay permission, cannot perform transition")
+            Log.w(TAG, "No overlay permission")
             return
         }
         if (isShowing) {
@@ -80,42 +62,38 @@ class OverlayRenderManager(private val context: Context) {
             return
         }
 
-        Log.d(TAG, "Transition: camera ($startRotX,$startRotY,$startDist) → ($endRotX,$endRotY,$endDist) ${durationMs}ms")
+        Log.d(TAG, "Transition: ($startRotX,$startRotY,$startDist) → ($endRotX,$endRotY,$endDist) ${durationMs}ms")
 
         handler.post {
             createOverlay(startRotX, startRotY, startDist)
             launchTarget()
-            startCameraAnimation(endRotX, endRotY, endDist, durationMs)
+            startCameraAnimation(startRotX, startRotY, startDist, endRotX, endRotY, endDist, durationMs)
         }
     }
 
     private fun createOverlay(rotX: Float, rotY: Float, dist: Float) {
         val root = FrameLayout(context)
+        root.alpha = 0f
 
-        val r = LitCubeRenderer(context).apply {
-            autoRotate = false
-            rotationX = rotX
-            rotationY = rotY
-            cameraDistance = dist
-        }
-        renderer = r
-
-        val gl = GLSurfaceView(context).apply {
-            setEGLContextClientVersion(3)
-            setRenderer(r)
-            renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
-        }
-        glSurfaceView = gl
-        root.addView(gl, FrameLayout.LayoutParams(
+        val surfaceView = SurfaceView(context)
+        root.addView(surfaceView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT,
         ))
 
-        // overlay 初始不可见，等 GL 渲染出第一帧再显示，避免黑闪
-        root.alpha = 0f
-        r.onFirstFrameReady = Runnable {
-            handler.post { overlayRoot?.alpha = 1f }
-        }
+        surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {}
+
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                engine.addSurface(OVERLAY_TARGET_ID, holder.surface, width, height)
+                engine.updateCamera(OVERLAY_TARGET_ID, rotX, rotY, dist)
+                handler.postDelayed({ overlayRoot?.alpha = 1f }, 50)
+            }
+
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                engine.removeSurface(OVERLAY_TARGET_ID)
+            }
+        })
 
         val params = WindowManager.LayoutParams().apply {
             width = WindowManager.LayoutParams.MATCH_PARENT
@@ -133,29 +111,26 @@ class OverlayRenderManager(private val context: Context) {
 
         wm.addView(root, params)
         overlayRoot = root
-        Log.d(TAG, "Overlay created at camera ($rotX, $rotY, $dist)")
+        Log.d(TAG, "Overlay created")
     }
 
     private fun startCameraAnimation(
-        endRotX: Float, endRotY: Float, endDist: Float, durationMs: Long,
+        startRotX: Float, startRotY: Float, startDist: Float,
+        endRotX: Float, endRotY: Float, endDist: Float,
+        durationMs: Long,
     ) {
-        val r = renderer ?: return
-        val startRotX = r.rotationX
-        val startRotY = r.rotationY
-        val startDist = r.cameraDistance
-
         currentAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = durationMs
             interpolator = DecelerateInterpolator(1.5f)
             addUpdateListener {
                 val t = it.animatedValue as Float
-                r.rotationX = startRotX + (endRotX - startRotX) * t
-                r.rotationY = startRotY + (endRotY - startRotY) * t
-                r.cameraDistance = startDist + (endDist - startDist) * t
+                val rx = startRotX + (endRotX - startRotX) * t
+                val ry = startRotY + (endRotY - startRotY) * t
+                val d = startDist + (endDist - startDist) * t
+                engine.updateCamera(OVERLAY_TARGET_ID, rx, ry, d)
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
-                    // 动画结束后延迟移除，让目标 Activity 的 GL 渲染就绪
                     handler.postDelayed({ removeOverlay() }, 300)
                 }
             })
@@ -166,15 +141,11 @@ class OverlayRenderManager(private val context: Context) {
     private fun removeOverlay() {
         currentAnimator?.cancel()
         currentAnimator = null
-        glSurfaceView?.onPause()
+        engine.removeSurface(OVERLAY_TARGET_ID)
         overlayRoot?.let {
-            try {
-                wm.removeView(it)
-            } catch (_: Exception) { }
+            try { wm.removeView(it) } catch (_: Exception) { }
         }
         overlayRoot = null
-        glSurfaceView = null
-        renderer = null
         Log.d(TAG, "Overlay removed")
     }
 }

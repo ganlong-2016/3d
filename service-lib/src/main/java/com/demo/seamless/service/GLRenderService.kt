@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
 import android.util.Log
+import android.view.Surface
 import com.demo.seamless.ipc.ClientConfig
 import com.demo.seamless.ipc.IGLRenderService
 import com.demo.seamless.ipc.IpcConstants
@@ -18,12 +19,16 @@ class GLRenderService : Service() {
     }
 
     private val registeredClients = mutableSetOf<String>()
+    lateinit var engine: EglRenderEngine
+        private set
     private lateinit var overlayManager: OverlayRenderManager
 
     override fun onCreate() {
         super.onCreate()
-        overlayManager = OverlayRenderManager(applicationContext)
-        Log.d(TAG, "GLRenderService created, package=${applicationContext.packageName}")
+        engine = EglRenderEngine(applicationContext)
+        engine.start()
+        overlayManager = OverlayRenderManager(applicationContext, engine)
+        Log.d(TAG, "GLRenderService created")
     }
 
     override fun onBind(intent: Intent?): IBinder {
@@ -34,17 +39,36 @@ class GLRenderService : Service() {
     private val binder = object : IGLRenderService.Stub() {
 
         override fun registerClient(clientId: String) {
-            synchronized(registeredClients) {
-                registeredClients.add(clientId)
-            }
+            synchronized(registeredClients) { registeredClients.add(clientId) }
             Log.d(TAG, "Client registered: $clientId (total=${registeredClients.size})")
         }
 
         override fun unregisterClient(clientId: String) {
-            synchronized(registeredClients) {
-                registeredClients.remove(clientId)
-            }
+            synchronized(registeredClients) { registeredClients.remove(clientId) }
+            engine.removeSurface(clientId)
             Log.d(TAG, "Client unregistered: $clientId (total=${registeredClients.size})")
+        }
+
+        override fun setSurface(clientId: String, surface: Surface?, width: Int, height: Int) {
+            if (surface == null || !surface.isValid) {
+                Log.w(TAG, "setSurface: invalid surface for $clientId")
+                return
+            }
+            val cfg = IpcConstants.CLIENT_CONFIGS[clientId]
+            engine.addSurface(clientId, surface, width, height)
+            if (cfg != null) {
+                engine.updateCamera(clientId, cfg.homeRotX, cfg.homeRotY, cfg.homeDist)
+            }
+            Log.d(TAG, "Surface set for $clientId ${width}x${height}")
+        }
+
+        override fun removeSurface(clientId: String) {
+            engine.removeSurface(clientId)
+            Log.d(TAG, "Surface removed for $clientId")
+        }
+
+        override fun updateCamera(clientId: String, rotX: Float, rotY: Float, dist: Float) {
+            engine.updateCamera(clientId, rotX, rotY, dist)
         }
 
         override fun requestTransition(
@@ -52,19 +76,18 @@ class GLRenderService : Service() {
             targetPkg: String,
             targetAct: String,
             durationMs: Long,
-            currentRotX: Float,
-            currentRotY: Float,
-            currentDist: Float,
+            rotX: Float,
+            rotY: Float,
+            dist: Float,
         ) {
-            Log.d(TAG, "Transition: $clientId → $targetPkg/$targetAct camera=($currentRotX,$currentRotY,$currentDist)")
+            Log.d(TAG, "Transition: $clientId → $targetPkg/$targetAct camera=($rotX,$rotY,$dist)")
 
             if (!overlayManager.canShowOverlay()) {
-                Log.w(TAG, "No overlay permission for ${applicationContext.packageName}, prompting")
+                Log.w(TAG, "No overlay permission, prompting")
                 promptOverlayPermission()
                 return
             }
 
-            // 查找目标客户端的主视角
             val targetConfig = findTargetConfig(clientId)
             if (targetConfig == null) {
                 Log.e(TAG, "Unknown target config for $clientId, launching directly")
@@ -73,9 +96,9 @@ class GLRenderService : Service() {
             }
 
             overlayManager.performTransition(
-                startRotX = currentRotX,
-                startRotY = currentRotY,
-                startDist = currentDist,
+                startRotX = rotX,
+                startRotY = rotY,
+                startDist = dist,
                 endRotX = targetConfig.homeRotX,
                 endRotY = targetConfig.homeRotY,
                 endDist = targetConfig.homeDist,
@@ -118,6 +141,7 @@ class GLRenderService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        engine.shutdown()
         Log.d(TAG, "GLRenderService destroyed")
     }
 }
