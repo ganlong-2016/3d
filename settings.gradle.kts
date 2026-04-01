@@ -24,3 +24,7 @@ dependencyResolutionManagement {
 
 rootProject.name = "3ddemo"
 include(":app")
+include(":service-lib")
+include(":client-lib")
+include(":client-a")
+include(":client-b")

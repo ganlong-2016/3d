@@ -34,6 +34,9 @@ class LitCubeRenderer(private val context: Context) : DemoRenderer {
     @Volatile override var rotationY = 45f
     @Volatile override var cameraDistance = 3.5f
 
+    var autoRotate = true
+    @Volatile var onFirstFrameReady: Runnable? = null
+
     private var program = 0
 
     // Uniform 句柄 — 用于从 CPU 向 GPU 传递参数
@@ -137,7 +140,9 @@ class LitCubeRenderer(private val context: Context) : DemoRenderer {
     override fun onDrawFrame(gl: GL10?) {
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
 
-        rotationY += 0.15f
+        if (autoRotate) rotationY += 0.15f
+
+        onFirstFrameReady?.let { it.run(); onFirstFrameReady = null }
 
         // ─── 构建 MVP 矩阵 ───
         Matrix.setLookAtM(viewMatrix, 0, 0f, 0f, cameraDistance, 0f, 0f, 0f, 0f, 1f, 0f)
